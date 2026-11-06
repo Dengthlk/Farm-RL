@@ -1,0 +1,16 @@
+{
+  "bc": {
+    "source": "bc-actor.pt",
+    "iteration": 0,
+    "architecture": "lejepa",
+    "source_sha256": "de1b241c9374d698d79cbc39529cc2ffdb2fa3ad9f6fe9b7723366f9c11ac4f3",
+    "parameters": 947363
+  },
+  "ppo": {
+    "source": "checkpoint-001200.pt",
+    "iteration": 1200,
+    "architecture": "lejepa",
+    "source_sha256": "989ed57df56a5ae2bdee950183b3b3cc4df153cdc4fdf0e8863c7f6a45bfb962",
+    "parameters": 947363
+  }
+}
