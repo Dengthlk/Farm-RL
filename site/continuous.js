@@ -31,6 +31,25 @@ export function receipt(before,after,unit,action) {
   return item?{unit,op,start,end,item}:null;
 }
 
+// A market fill changes cash even when the selected farm action failed.
+// Check the result on the unit itself so a failed action still stops its route.
+function applied(before,after,unit,op) {
+  const name=op[0];
+  if(name==='PASS')return true;
+  if(name in vectors || ['PLANT','WATER','HARVEST'].includes(name))
+    return Boolean(receipt(before,after,unit,op));
+  const [x,y]=positions(before)[unit];
+  const prev=before.observation.farms[0].tiles[y][x];
+  const next=after.observation.farms[0].tiles[y][x];
+  if(name==='DIG')return prev!=null && next==null;
+  if(name==='BUILD_COOP' || name==='BUILD_PASTURE')
+    return prev==null && next?.kind===name.slice(6);
+  if(name==='CARE')return !prev?.cared_today && next?.cared_today;
+  const bag=before.observation.private.inventories[unit];
+  const result=after.observation.private.inventories[unit];
+  return [...Object.keys(bag),...Object.keys(result)].some(key=>(bag[key]||0)!==(result[key]||0));
+}
+
 export class ActionQueue {
   constructor({read,step,onChange,onStop}) {
     this.read=read;this.step=step;this.onChange=onChange;this.onStop=onStop;
@@ -51,7 +70,7 @@ export class ActionQueue {
         const intent=this.items[0],before=this.read(),op=operationFor(intent,before);
         if(!op){this.items.shift();continue;}
         const units=positions(before);
-        const action={farmer:intent.unit===0?op:['PASS'],hands:units.slice(1).map((_,i)=>i+1===intent.unit?op:['PASS']),market:intent.order?[intent.order]:[]};
+        const action={farmer:intent.unit===0?op:['PASS'],hands:units.slice(1).map((_,i)=>i+1===intent.unit?op:['PASS'])};
         await this.step(action);
         const after=this.read();
         if(before.id!==after.id || after.observation.step!==before.observation.step+1)
@@ -60,10 +79,9 @@ export class ActionQueue {
           this.cancel(after.done?'赛季已结束':'新的一天开始，队列已停止');break;
         }
         if(this.items[0]!==intent)continue;
-        const watched=op[0] in vectors || ['PLANT','WATER','HARVEST'].includes(op[0]);
-        const ok=intent.order?after.observation.farms[0].money!==before.observation.farms[0].money:
-          watched?Boolean(receipt(before,after,intent.unit,op)):op[0]==='PASS'||after.history.at(-1)?.changed;
-        if(!ok){this.cancel('行动未生效，后续行动已停止');break;}
+        if(!applied(before,after,intent.unit,op)){
+          this.cancel('农夫行动未生效，后续行动已停止。交易结果见田间日志。');break;
+        }
         if(!intent.to || sameCell(positions(after)[intent.unit],intent.to))this.items.shift();
         this.onChange();
       }

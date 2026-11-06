@@ -12,7 +12,7 @@ const queueDriver=new ActionQueue({read:()=>game,step:advance,onChange:()=>rende
 function queueLabel(){
  const job=queueDriver.items[0];
  if(!job)return '等待行动';
- const name=job.to?'前往 ('+job.to.join(', ')+')':opText(job.op||job.order);
+ const name=job.to?'前往 ('+job.to.join(', ')+')':opText(job.op);
  return name+' · '+queueDriver.items.length+' 项';
 }
 const names = {WHEAT:'小麦',CARROT:'胡萝卜',TOMATO:'番茄',STRAWBERRY:'草莓',MELON:'甜瓜',EGG:'鹅蛋',MILK:'牛奶',WOOL:'羊毛',FERTILIZER:'肥料',GOOSE:'鹅',COW:'奶牛',SHEEP:'绵羊'};
@@ -91,21 +91,31 @@ function inventoryText(data) { return Object.entries(data).filter(([,v])=>v>0).m
 function marketCards() {
  const list=tab==='seed'?crops:tab==='sell'?Object.keys(obs().market.prices):['FERTILIZER','WHEAT','GOOSE','COW','SHEEP'];
  return list.map(k=>{
+  const carried = obs().private.inventories.reduce((n,bag)=>n+(bag[k]||0),0);
   const price=tab==='seed'?seedPrices[k]:({GOOSE:300,COW:400,SHEEP:500}[k]||obs().market.prices[k]);
-  const note=tab==='seed'?`${ages[k]} 天起收获`:tab==='sell'?`仓库 ${obs().private.shed[k]||0} 份`:k==='WHEAT'?'喂养牲畜':k==='FERTILIZER'?'帮助作物增产':k==='GOOSE'?'需建造鹅舍':'需建造牧场';
-  return `<article class="product-card"><div class="product-illustration ${k.toLowerCase()}">${produce(k,53)}</div><strong>${names[k]}</strong><small>${note}</small><div><span>$${money(price)}<small> / ${tab==='seed'?'颗':'份'}</small></span>${btn('trade-'+k,icon('plus',15),'add-button',`aria-label="${tab==='sell'?'出售':'购买'}${names[k]}" ${game.done||(tab==='sell'&&!obs().private.shed[k])?'disabled':''}`)}</div></article>`;
+  const note=tab==='seed'?`${ages[k]} 天起收获`:tab==='sell'?`仓库 ${obs().private.shed[k]||0} · 背包 ${carried}`:k==='WHEAT'?'喂养牲畜':k==='FERTILIZER'?'帮助作物增产':k==='GOOSE'?'需建造鹅舍':'需建造牧场';
+  return `<article class="product-card"><div class="product-illustration ${k.toLowerCase()}">${produce(k,53)}</div><strong>${names[k]}</strong><small>${note}</small><div><span>$${money(price)}<small> / ${tab==='seed'?'颗':'份'}</small></span>${btn('trade-'+k,icon('plus',15),'add-button',`aria-label="${tab==='sell'?'出售':'购买'}${names[k]}" ${game.done||(tab==='sell'&&!obs().private.shed[k]&&!carried)?'disabled':''}`)}</div></article>`;
  }).join('');
 }
-function queue(op) { if(game.done) return; if(continuous){queueDriver.push({unit,order:op});return;} if(orders.length>=10) return toast('每回合最多 10 笔订单，先推进这一回合吧。'); orders.push(op); render(); toast('已加入本回合订单，推进回合后成交'); }
+function queue(op) {
+ if(game.done)return;
+ if(orders.length>=10)return toast('一个回合最多 10 笔订单，请先结算。');
+ orders.push(op);
+ render();
+ toast(continuous?'订单已暂存，将随下一步行动结算。':'订单已暂存，推进回合时结算。');
+}
 function plan(op) { if(game.done) return; if(continuous){queueDriver.push({unit,op});return;} actions[unit]=op; render(); toast(`已计划：${opText(op)} · 空格 / 推进回合执行`); }
 async function advance(actionOverride) {
  if(busy||game.done) return;
  const before=game;
- const submitted=actionOverride||{farmer:actions[0]||['PASS'],hands:own().hands.map((_,i)=>actions[i+1]||['PASS']),market:orders};
+ const units=actionOverride||{farmer:actions[0]||['PASS'],hands:own().hands.map((_,i)=>actions[i+1]||['PASS'])};
+ // Take this turn's orders before awaiting the server. Orders added while the
+ // request or animation is in progress belong to the following turn.
+ const submitted={...units,market:orders.splice(0)};
  busy=true;render();
  try {
   const after=await api('step',{id:before.id,step:before.observation.step,action:submitted});
-  game=after;actions={};orders=[];
+  game=after;actions={};
   if(unit>own().hands.length)unit=0;
   const executed=[submitted.farmer,...submitted.hands];
   const event=executed.map((op,i)=>receipt(before,after,i,op)).find(Boolean);
@@ -119,11 +129,15 @@ async function advance(actionOverride) {
   remember();render();
   await new Promise(resolve=>setTimeout(resolve,duration));
   if(game.done)showResult();
- } catch(e) { toast(e.message);if(continuous && queueDriver.running)throw e; }
+ } catch(e) {
+  const message=submitted.market.length ? e.message+' 请刷新并核对本回合交易记录。' : e.message;
+  toast(message);
+  if(continuous && queueDriver.running)throw new Error(message);
+ }
  finally {motion=null;busy=false;render();}
 }
 function showRules() {
- openDialog('让每个回合，都长出一点收获。',`<p class="dialog-lead">两座农场，一个共享市场，30 天的经营比赛。你和 AI 同时提交行动，由官方引擎结算。</p><div class="guide-steps">${[['01','先买种子','在集市添加种子订单，推进一回合完成购买。'],['02','在脚下播种','用方向键移动农夫；种植只作用于农夫当前地块。'],['03','记得浇水','种下当天必须浇水；之后连续两天不浇水会变成杂草。'],['04','把收获变成现金','收获进入背包。在中央仓库旁入仓，再出售；每天结束也会自动入仓。']].map(([n,t,p])=>`<div><span>${n}</span><section><h3>${t}</h3><p>${p}</p></section></div>`).join('')}</div><div class="rule-callout">${icon('coin',24)}<div><strong>胜负，只看最后的现金。</strong><p>结束时种子、作物、动物、背包和仓库都不折算成现金。记得提前出售。</p></div></div><details open><summary>时间与行动</summary><p>每天 24 回合。每回合每位农夫执行一个行动，同时可提交最多 10 笔市场订单。农夫行动先结算，市场订单后结算，所以当回合购买的种子要到下一回合才能种。默认共 719 次行动，最后可行动时间为第 30 天 22:00。</p></details><details><summary>土地、仓库与农工</summary><p>初始现金 $3,000，西北 5×5 地块免费解锁。扩地依次为东北 $1,000、西南 $2,000、东南 $4,000。锁定土地可以通行。中央四格 (4,4)、(5,4)、(4,5)、(5,5) 均能操作仓库；容量 100，超出部分在全部入仓时丢失。农工当天有效，价格依次为 1、1、2、3、5…，次日需重新雇佣。</p></details><details><summary>作物与动物</summary><p>小麦、胡萝卜 2 天起收获；番茄 8 天、草莓和甜瓜 10 天起收获。一次性作物收获后消失；番茄和草莓多次产出。动物需要先建鹅舍或牧场，再从仓库取出并放置，每天用背包里的小麦喂养。连续两天未喂会逃跑。</p></details><details><summary>市场与城镇</summary><p>双方使用同一个动态市场，销售增加供给、降低价格；城镇商店消耗库存。只有仓库里的商品可以出售。种子和动物固定售价，产品价格逐单位结算。城镇按规则逐步解锁商店，其需求由官方引擎处理。</p></details><p class="subtle">规则对应本项目固定的 kaggle-environments 1.32.7。无效或资金不足的合法格式行动，官方引擎会忽略。</p>`,true);
+ openDialog('让每个回合，都长出一点收获。',`<p class="dialog-lead">两座农场，一个共享市场，30 天的经营比赛。你和 AI 同时提交行动，由官方引擎结算。</p><div class="guide-steps">${[['01','先买种子','在集市暂存种子订单，点另一块地，走第一步时一起购买。原地购买可点「只交易」。'],['02','在脚下播种','用方向键移动农夫；种植只作用于农夫当前地块。'],['03','记得浇水','种下当天必须浇水；之后连续两天不浇水会变成杂草。'],['04','把收获变成现金','收获进入背包。在中央仓库旁入仓，再出售；每天结束也会自动入仓。']].map(([n,t,p])=>`<div><span>${n}</span><section><h3>${t}</h3><p>${p}</p></section></div>`).join('')}</div><div class="rule-callout">${icon('coin',24)}<div><strong>胜负，只看最后的现金。</strong><p>结束时种子、作物、动物、背包和仓库都不折算成现金。记得提前出售。</p></div></div><details open><summary>时间与行动</summary><p>每天 24 回合。每回合每位农夫执行一个行动，同时可提交最多 10 笔市场订单。农夫行动先结算，市场订单后结算，所以当回合购买的种子要到下一回合才能种。默认共 719 次行动，最后可行动时间为第 30 天 22:00。</p></details><details><summary>土地、仓库与农工</summary><p>初始现金 $3,000，西北 5×5 地块免费解锁。扩地依次为东北 $1,000、西南 $2,000、东南 $4,000。锁定土地可以通行。中央四格 (4,4)、(5,4)、(4,5)、(5,5) 均能操作仓库；容量 100，超出部分在全部入仓时丢失。农工当天有效，价格依次为 1、1、2、3、5…，次日需重新雇佣。</p></details><details><summary>作物与动物</summary><p>小麦、胡萝卜 2 天起收获；番茄 8 天、草莓和甜瓜 10 天起收获。一次性作物收获后消失；番茄和草莓多次产出。动物需要先建鹅舍或牧场，再从仓库取出并放置，每天用背包里的小麦喂养。连续两天未喂会逃跑。</p></details><details><summary>市场与城镇</summary><p>双方使用同一个动态市场，销售增加供给、降低价格；城镇商店消耗库存。只有仓库里的商品可以出售。种子和动物固定售价，产品价格逐单位结算。城镇按规则逐步解锁商店，其需求由官方引擎处理。</p></details><p class="subtle">规则对应本项目固定的 kaggle-environments 1.32.7。无效或资金不足的合法格式行动，官方引擎会忽略。</p>`,true);
 }
 function showModel() { showNew(); }
 function showNew() {
@@ -143,7 +157,7 @@ async function startNew() {
 function showPlant() {
  const t=own().tiles[pos()[1]][pos()[0]];
  if(t!==null && !(continuous && queueDriver.running))return toast('请先移动到空闲且已解锁的土地上。');
- openDialog('选择要播种的作物',`<p class="dialog-lead">${continuous&&queueDriver.running?'播种将在之前的行动完成后，于农夫脚下执行。':`种植位置 (${pos().join(', ')})。`}</p><div class="seed-options">${crops.map(k=>btn('plant-'+k,produce(k,42)+`<span><strong>${names[k]}</strong><small>种子 ${obs().private.seeds[k]||0} 颗 · ${ages[k]} 天起收获</small></span>`,'seed-option',!obs().private.seeds[k]&&!(continuous&&queueDriver.running)?'disabled':'')).join('')}</div><p class="subtle">没有种子？先到集市购买种子，成交后即可播种。</p>`);
+ openDialog('选择要播种的作物',`<p class="dialog-lead">${continuous&&queueDriver.running?'播种将在之前的行动完成后，于农夫脚下执行。':`种植位置 (${pos().join(', ')})。`}</p><div class="seed-options">${crops.map(k=>btn('plant-'+k,produce(k,42)+`<span><strong>${names[k]}</strong><small>种子 ${obs().private.seeds[k]||0} 颗 · ${ages[k]} 天起收获</small></span>`,'seed-option',!obs().private.seeds[k]&&!(continuous&&queueDriver.running)?'disabled':'')).join('')}</div><p class="subtle">种子要先成交才能播种。可随移动一起买，也可以点「只交易」。</p>`);
 }
 function showMore() {
  const opts=[['FERTILIZE','施肥'],['BUILD_COOP','建造鹅舍'],['BUILD_PASTURE','建造牧场'],['FEED','喂养动物'],['CARE','照料动物'],['COLLECT_FERTILIZER','收集肥料'],['PASS','休息一回合']];
